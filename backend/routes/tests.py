@@ -291,13 +291,25 @@ async def extract_from_pdf(req: ExtractFromPdfReq, user=Depends(get_current_user
         raise HTTPException(status_code=400, detail="Material not ready")
 
     if req.pages:
-        text = await get_material_pages_text(req.material_id, req.pages, max_chars=24000)
+        text = await get_material_pages_text(req.material_id, req.pages, max_chars=80000)
         page_scope = f"pages {', '.join(str(p) for p in sorted(req.pages))}"
     else:
-        text = await get_material_full_text(req.material_id, max_chars=24000)
+        text = await get_material_full_text(req.material_id, max_chars=80000)
         page_scope = "the entire document"
     if not text.strip():
         raise HTTPException(status_code=400, detail="No text content in the selected pages")
+
+    # Optional separate answer-key PDF
+    answer_key_text = ""
+    if req.answer_key_material_id:
+        ak_mat = await db.materials.find_one(
+            {"id": req.answer_key_material_id, "user_id": user["id"], "is_deleted": False}
+        )
+        if not ak_mat:
+            raise HTTPException(status_code=404, detail="Answer key material not found")
+        if ak_mat.get("status") != "ready":
+            raise HTTPException(status_code=400, detail="Answer key material not ready")
+        answer_key_text = await get_material_full_text(req.answer_key_material_id, max_chars=40000)
 
     # Build answer-source instructions based on user choice
     answer_key_block = ""
