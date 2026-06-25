@@ -1,0 +1,26 @@
+{
+  "summary": "Backend-only verification of PDF MCQ extraction flow for PrepMind AI. Built a synthetic 1-page PDF containing a comprehension passage + 2 related MCQs, 3 standalone MCQs with an inline answer key (1-C, 2-B, 3-C, 4-D, 5-B), and 1 MCQ (Q6) with no answer. Exercised the full flow: auth -> /materials/upload -> poll status -> /materials/{id}/pages -> /tests/extract-from-pdf -> /tests/start-from-extracted -> GET /tests/{id} -> /tests/submit -> /tests/result/{id}. All target behaviors verified: passage field is populated verbatim for the 2 comprehension questions, Q6 (no answer key) was skipped (skipped_no_answer=1), all returned questions carry answer_evidence, correct_index matches the answer key exactly (C,B,C,D,B), passage persists on the test detail and the result review payload, and the submit endpoint computes correct/incorrect against the AI-extracted correct_index (2 correct vs 3 incorrect as designed).",
+  "tested_scope": ["backend", "auth", "integration"],
+  "passed": [
+    "POST /api/auth/login (test@prepmind.ai)",
+    "POST /api/materials/upload (PDF upload)",
+    "GET /api/materials (status polled to ready in ~3s)",
+    "GET /api/materials/{id}/pages returns page list with preview + char_count",
+    "POST /api/tests/extract-from-pdf returns extracted_count=5, skipped_no_answer=1",
+    "Comprehension passage non-empty verbatim on both related questions (passage_len=306)",
+    "Q6 with no inline answer was dropped (skipped_no_answer>=1)",
+    "All returned questions include non-empty answer_evidence (e.g. 'Answer Key: 1-C')",
+    "correct_index extracted matches the PDF answer key exactly (C=2, B=1, C=2, D=3, B=1)",
+    "POST /api/tests/start-from-extracted creates pdf_extracted test with 5 questions",
+    "GET /api/tests/{test_id} persists & returns passage field (2 non-empty)",
+    "POST /api/tests/submit computes correct=2 / incorrect=3 against AI correct_index, score=1.25 (0.25 negative marks applied)",
+    "GET /api/tests/result/{result_id} returns questions[] with correct_index + passage for review",
+    "POST /api/tests/extract-from-pdf with pages=[1] respects page filter (5 qs from page 1)"
+  ],
+  "failed": [],
+  "action_items": [],
+  "success_rate": {"backend": "100%", "frontend": "n/a (skipped per request)"},
+  "retest_needed": false,
+  "full_testing_deferred": true,
+  "notes": "Mistral extraction worked on first attempt (~10-20s). The /tests/submit endpoint expects answers as a dict {question_id: selected_index}, not a list — relevant for any client integration. Both bug fixes (passage extraction + no-default-A behavior with skipped_no_answer) are confirmed working end-to-end."
+}

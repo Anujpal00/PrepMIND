@@ -224,10 +224,34 @@ async def get_material_full_text(material_id: str, max_chars: int = 12000) -> st
 
 
 async def get_material_pages_text(material_id: str, pages: list, max_chars: int = 24000) -> str:
-    """Return concatenated text for only the specified page numbers."""
+    """Return concatenated text for only the specified page numbers, deduplicated across overlapping chunks."""
     chunks = await db.chunks.find(
         {"material_id": material_id, "page": {"$in": pages}},
         {"_id": 0, "embedding": 0},
     ).sort("order", 1).to_list(5000)
-    text = "\n\n".join(f"[Page {c['page']}]\n{c['text']}" for c in chunks)
+    # Reconstruct per-page text by stitching chunks and removing overlap repetition.
+    by_page: dict = {}
+    for c in chunks:
+        p = c["page"]
+        by_page.setdefault(p, []).append(c["text"])
+    parts = []
+    for p in sorted(by_page.keys()):
+        merged = ""
+        for piece in by_page[p]:
+            piece = piece.strip()
+            if not piece:
+                continue
+            if merged:
+                # Find largest suffix of `merged` that is a prefix of `piece` (overlap removal)
+                max_check = min(300, len(merged), len(piece))
+                ov = 0
+                for k in range(max_check, 20, -1):
+                    if merged[-k:] == piece[:k]:
+                        ov = k
+                        break
+                merged += piece[ov:]
+            else:
+                merged = piece
+        parts.append(f"[Page {p}]\n{merged}")
+    text = "\n\n".join(parts)
     return text[:max_chars]

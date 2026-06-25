@@ -297,27 +297,39 @@ async def extract_from_pdf(req: ExtractFromPdfReq, user=Depends(get_current_user
     if not text.strip():
         raise HTTPException(status_code=400, detail="No text content in the selected pages")
 
-    prompt = f"""You are extracting questions from an Indian government exam paper / question bank.
+    prompt = f"""You are extracting questions VERBATIM from an Indian government exam paper / question bank.
 
-The text below is from {page_scope} of a student-uploaded PDF. Your job is to find every MULTIPLE CHOICE QUESTION that already exists in the text and return it verbatim (do NOT invent new questions).
+The text below is from {page_scope} of a student-uploaded PDF. Extract EVERY multiple-choice question that already exists in the text. Do NOT invent, paraphrase, or guess anything.
 
-Rules:
-- Only extract MCQs with 4 options (A/B/C/D, or 1/2/3/4, or i/ii/iii/iv). Skip fill-in-the-blanks and essay questions.
-- Keep the question text, options, and correct answer exactly as written.
-- If the correct answer is given in the text (e.g. "Answer: B" or shown in an answer key), set correct_index accordingly (0=A,1=B,2=C,3=D). If the answer is not stated anywhere, set correct_index to null.
-- Include explanation only if it is present in the text; else empty string.
-- Skip duplicate questions.
-- Limit to at most 100 questions.
+CRITICAL RULES:
+
+1. VERBATIM EXTRACTION: Copy the question text EXACTLY as written. Do not shorten, paraphrase, fix grammar, or remove formatting like "Q.1", "1.", or numbering.
+
+2. COMPREHENSION / READING PASSAGES: If a question depends on a passage, paragraph, case-study, statements list, or reading text above it, copy that ENTIRE passage VERBATIM into the `passage` field. The `question` field contains ONLY the actual question after the passage (e.g. "According to the passage, what is…"). Multiple consecutive questions sharing the same passage MUST each carry the full passage text in their own `passage` field.
+
+3. OPTIONS: Exactly 4 options. Copy each option verbatim including any (A)/(B)/1./2. labels — but strip the label so only the answer text remains.
+
+4. ANSWER KEY — MOST IMPORTANT:
+   - Set `correct_index` (0=A, 1=B, 2=C, 3=D) ONLY if the answer is EXPLICITLY stated in the visible text — e.g. an answer key section ("Answers: 1-B, 2-C, …"), or an inline marking like "Ans: (C)" or a circled / bolded / starred option.
+   - If the answer is NOT explicitly stated anywhere in the text, set `correct_index` to null.
+   - DO NOT guess based on your own knowledge. DO NOT pick a likely-looking answer.
+   - Set `answer_evidence` to the exact substring from the text that proves the answer (e.g. "Q1. Ans: B" or "Answer Key: 1) C"). If correct_index is null, set this to empty string.
+
+5. SKIP: fill-in-the-blanks, true/false-only questions, essay/descriptive questions, match-the-following, and any question without exactly 4 options.
+
+6. NO DUPLICATES. Limit to 100 questions max.
 
 Return STRICT JSON:
 {{
   "questions": [
     {{
-      "question": "exact question text",
-      "options": ["opt A","opt B","opt C","opt D"],
-      "correct_index": 0,
-      "explanation": "",
-      "topic": "infer subject/topic e.g. History"
+      "passage": "Full verbatim passage text if applicable, else empty string",
+      "question": "Exact question text verbatim",
+      "options": ["opt A text","opt B text","opt C text","opt D text"],
+      "correct_index": 2,
+      "answer_evidence": "exact substring from text proving the answer",
+      "explanation": "explanation if present in text, else empty string",
+      "topic": "infer e.g. History/Polity/Reading Comprehension"
     }}
   ]
 }}
@@ -332,10 +344,10 @@ Output ONLY valid JSON. No markdown."""
     try:
         raw = await mistral.chat(
             messages=[
-                {"role": "system", "content": "You extract MCQs verbatim from exam papers and return strict JSON."},
+                {"role": "system", "content": "You extract MCQs verbatim from exam papers. You never guess answers — only mark answers that are explicitly stated in the source text. Return strict JSON."},
                 {"role": "user", "content": prompt},
             ],
-            temperature=0.1,
+            temperature=0.0,
             max_tokens=8000,
             json_mode=True,
         )
@@ -345,32 +357,44 @@ Output ONLY valid JSON. No markdown."""
         raise HTTPException(status_code=500, detail=f"Extraction failed: {e}")
 
     questions = data.get("questions", [])
-    # Filter invalid entries
     clean = []
+    skipped_no_answer = 0
     for q in questions:
         if not isinstance(q, dict): continue
         opts = q.get("options") or []
         if len(opts) != 4: continue
         if not q.get("question"): continue
         ci = q.get("correct_index")
-        if ci is None or not isinstance(ci, int) or not (0 <= ci <= 3):
-            # If answer missing, default to 0 but mark unknown
-            ci = 0
+        evidence = (q.get("answer_evidence") or "").strip()
+        # Only keep questions with a verified answer (correct_index set AND evidence quoted)
+        if ci is None or not isinstance(ci, int) or not (0 <= ci <= 3) or not evidence:
+            skipped_no_answer += 1
+            continue
         clean.append({
+            "passage": str(q.get("passage", "") or "").strip(),
             "question": str(q.get("question", "")).strip(),
             "options": [str(o) for o in opts],
             "correct_index": ci,
+            "answer_evidence": evidence,
             "explanation": str(q.get("explanation", "") or "").strip(),
             "topic": str(q.get("topic", "") or "").strip(),
         })
 
     if not clean:
-        raise HTTPException(status_code=400, detail="No MCQs found in this material. The PDF may not contain question-answer format.")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No MCQs with a verified answer key found in selected pages. "
+                "Tip: make sure the answer key page is also selected, "
+                "or the answers are written inline in the PDF (e.g. 'Ans: B')."
+            ),
+        )
 
     return {
         "material_id": req.material_id,
         "material_filename": material.get("filename"),
         "extracted_count": len(clean),
+        "skipped_no_answer": skipped_no_answer,
         "questions": clean,
     }
 
@@ -397,6 +421,7 @@ async def start_from_extracted(req: StartExtractedReq, user=Depends(get_current_
             "section": q.get("topic") or "Extracted",
             "subject": q.get("topic") or "From PDF",
             "topic": q.get("topic") or "",
+            "passage": q.get("passage", "") or "",
             "question": q["question"],
             "options": [str(o) for o in opts],
             "correct_index": int(q.get("correct_index", 0)),

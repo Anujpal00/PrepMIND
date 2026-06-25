@@ -96,6 +96,12 @@ export default function TestResult() {
                   <div className="flex items-start gap-3">
                     <Icon className={`size-5 mt-0.5 ${color} shrink-0`} />
                     <div className="flex-1 min-w-0">
+                      {q.passage && (
+                        <div className="mb-3 p-3 rounded bg-slate-50 dark:bg-slate-800/60 border-l-4 border-orange-500" data-testid={`review-passage-${i}`}>
+                          <div className="text-[10px] uppercase tracking-[0.2em] font-bold text-orange-600 mb-1.5">Passage</div>
+                          <div className="text-xs leading-relaxed whitespace-pre-wrap text-slate-700 dark:text-slate-200 max-h-48 overflow-y-auto">{q.passage}</div>
+                        </div>
+                      )}
                       <p className="font-semibold leading-relaxed">{i + 1}. {q.question}</p>
                       <div className="mt-3 space-y-1.5 text-sm">
                         {q.options.map((opt, oi) => (

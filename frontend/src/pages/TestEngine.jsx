@@ -103,6 +103,12 @@ export default function TestEngine() {
               </Button>
             </div>
             <Card className="p-6 md:p-8 mb-4">
+              {q.passage && (
+                <div className="mb-5 p-4 rounded-md bg-slate-50 dark:bg-slate-800/60 border-l-4 border-orange-500" data-testid="test-passage">
+                  <div className="text-[10px] uppercase tracking-[0.2em] font-bold text-orange-600 mb-2">Passage</div>
+                  <div className="text-sm leading-relaxed whitespace-pre-wrap text-slate-700 dark:text-slate-200 max-h-72 overflow-y-auto">{q.passage}</div>
+                </div>
+              )}
               <h2 className="font-semibold text-lg leading-relaxed mb-6">{q.question}</h2>
               <div className="space-y-2">
                 {q.options.map((opt, oi) => (
