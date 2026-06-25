@@ -415,10 +415,11 @@ Output ONLY valid JSON. No markdown. Include ALL questions you find."""
         if ci is None or not isinstance(ci, int) or not (0 <= ci <= 3):
             skipped_no_answer += 1
             continue
-        # If no answer-key PDF and no AI fallback allowed, require text evidence
-        if not req.answer_key_material_id and not req.use_ai_fallback and not evidence:
-            skipped_no_answer += 1
-            continue
+        # Strict mode: when no answer-key PDF and no fallback, AI must not have used its own knowledge
+        if not req.answer_key_material_id and not req.use_ai_fallback:
+            if source != "text" or not evidence:
+                skipped_no_answer += 1
+                continue
         if source == "ai_knowledge":
             ai_answered += 1
         clean.append({

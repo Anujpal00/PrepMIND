@@ -1,0 +1,22 @@
+{
+  "summary": "Re-tested POST /api/tests/extract-from-pdf after the strict-mode tightening fix at /app/backend/routes/tests.py:418-422. The previously-failing scenario 1 (no answer key + use_ai_fallback=false) now correctly returns HTTP 400 with the expected hint, instead of silently leaking ai_knowledge picks. Scenarios 2 (ai fallback), 3 (separate answer-key material), and 4 (inline 'Ans: X') still pass with the same response shapes as iteration_3. ALL 4 of 4 acceptance criteria now PASS.",
+  "tested_scope": ["backend"],
+  "passed": [
+    "Login test@prepmind.ai/test123 returns valid JWT (200).",
+    "Materials from iteration_3 still present and status=ready: source_no_key.txt (138d5eab), source_with_key.txt (e44acf93), answer_key.txt (bf8d9b4e). No re-upload needed.",
+    "Scenario 1 FIX VERIFIED — strict mode (material_id=source_no_key, use_ai_fallback=false, no answer_key_material_id): HTTP 400 with detail='No MCQs with a verified answer could be extracted. Provide an answer key PDF, enable the AI fills missing answers option, or include the answer-key page in your selection.' The new filter at lines 419-422 rejects every Mistral question (source='ai_knowledge') under strict mode, leaving clean=[] which triggers the 400. Strict 'do not guess' contract now upheld.",
+    "Scenario 2 regression (no key + use_ai_fallback=true): HTTP 200, extracted_count=5, ai_answered=5, answer_source_summary='ai_fallback', every question has answer_source='ai_knowledge' with valid correct_index (e.g. Paris=2, Mars=1, Shakespeare=1, Yen=2, H2O=1).",
+    "Scenario 3 regression (separate answer_key_material_id, use_ai_fallback=false): HTTP 200, extracted_count=5, ai_answered=0, answer_source_summary='answer_key_pdf', every question has answer_source='answer_key_pdf', answer_evidence quoting the key (Q1) C, Q2) B, Q3) B, Q4) C, Q5) B), and correct_index matches (2,1,1,2,1).",
+    "Scenario 4 regression (source with inline 'Ans: X' key, use_ai_fallback=false): HTTP 200, extracted_count=5, ai_answered=0, answer_source_summary='text_only', every question has answer_source='text' with answer_evidence='Ans: X' substring.",
+    "Response shape unchanged: ai_answered (int), answer_source_summary (string), skipped_no_answer (int), questions[] all present across all 200 responses."
+  ],
+  "failed": [],
+  "action_items": [
+    "None blocking. Strict-mode leak from iteration_3 is closed. Main agent can ship the extract-from-pdf feature.",
+    "Optional follow-up (not blocking, deferred to full QA): real multi-page PDF with ~30 MCQs to validate max_chars=80000 / max_tokens=16000 in volume; code review in iteration_3 confirmed these values are correctly wired."
+  ],
+  "success_rate": {"backend": "100% (4 of 4 extract scenarios pass)", "frontend": "not tested (per request)"},
+  "retest_needed": false,
+  "full_testing_deferred": true,
+  "test_credentials": "test@prepmind.ai / test123 verified working. /app/memory/test_credentials.md has the canonical entry."
+}
