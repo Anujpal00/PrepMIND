@@ -100,9 +100,12 @@ export default function TestsSetup() {
       const { data } = await api.post("/tests/extract-from-pdf", {
         material_id: pdfForm.material_id,
         pages: Array.from(selectedPages).sort((a,b) => a-b),
+        answer_key_material_id: pdfForm.answer_key_material_id || undefined,
+        use_ai_fallback: pdfForm.use_ai_fallback,
       });
       setExtracted(data);
-      toast.success(`Found ${data.extracted_count} questions in ${selectedPages.size} selected pages!`);
+      const aiNote = data.ai_answered ? ` (${data.ai_answered} answered by AI)` : "";
+      toast.success(`Found ${data.extracted_count} questions in ${selectedPages.size} selected pages!${aiNote}`);
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Extraction failed");
     } finally { setExtracting(false); }
@@ -284,6 +287,45 @@ export default function TestsSetup() {
               </div>
             )}
 
+            {/* Answer source controls */}
+            {pages.length > 0 && (
+              <div className="grid md:grid-cols-2 gap-4 border-t border-border pt-4" data-testid="pdf-answer-source">
+                <div className="space-y-2">
+                  <Label>Answer key PDF (optional)</Label>
+                  <Select
+                    value={pdfForm.answer_key_material_id || "none"}
+                    onValueChange={(v) => setPdfForm({ ...pdfForm, answer_key_material_id: v === "none" ? "" : v })}
+                  >
+                    <SelectTrigger data-testid="pdf-answerkey-select"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">— None —</SelectItem>
+                      {materials.filter(m => m.id !== pdfForm.material_id).map(m => (
+                        <SelectItem key={m.id} value={m.id}>{m.filename}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">Upload a separate answer-key PDF in Materials, then pick it here for the most accurate results.</p>
+                </div>
+                <div className="space-y-2">
+                  <Label>If no answer key found</Label>
+                  <label className="flex items-start gap-2 p-3 rounded-md border border-border cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800" data-testid="pdf-fallback-toggle">
+                    <input
+                      type="checkbox"
+                      checked={pdfForm.use_ai_fallback}
+                      onChange={e => setPdfForm({ ...pdfForm, use_ai_fallback: e.target.checked })}
+                      className="size-4 mt-0.5 accent-orange-600"
+                      data-testid="pdf-fallback-checkbox"
+                      disabled={!!pdfForm.answer_key_material_id}
+                    />
+                    <div className="text-xs">
+                      <div className="font-semibold">Let AI fill missing answers using its own research</div>
+                      <div className="text-muted-foreground mt-0.5">Best-effort — may not be 100% accurate. Disabled when an answer-key PDF is chosen.</div>
+                    </div>
+                  </label>
+                </div>
+              </div>
+            )}
+
             <Button
               onClick={extractPdf}
               disabled={!pdfForm.material_id || extracting || selectedPages.size === 0}
@@ -305,7 +347,12 @@ export default function TestsSetup() {
                 </div>
                 {extracted.skipped_no_answer > 0 && (
                   <div className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 rounded border border-amber-200 dark:border-amber-900/40" data-testid="pdf-skip-warning">
-                    {extracted.skipped_no_answer} question(s) were skipped because no verified answer key was found in the selected pages. Include the answer-key page to recover them.
+                    {extracted.skipped_no_answer} question(s) were skipped because no answer could be determined. Add an answer-key PDF or enable "AI fills missing answers" to recover them.
+                  </div>
+                )}
+                {extracted.ai_answered > 0 && (
+                  <div className="text-xs text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/20 px-3 py-2 rounded border border-blue-200 dark:border-blue-900/40" data-testid="pdf-ai-note">
+                    {extracted.ai_answered} answer(s) were filled in by AI research. Verify before relying on them.
                   </div>
                 )}
 

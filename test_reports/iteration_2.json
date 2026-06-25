@@ -1,0 +1,37 @@
+{
+  "summary": "Backend-only smoke test of new /api/tests/extract-from-pdf changes. The endpoint is COMPLETELY BROKEN — every call returns 500 due to a NameError. Test blocked at first call; could not validate any of the 6 listed acceptance criteria.",
+  "tested_scope": ["backend"],
+  "passed": [
+    "POST /api/auth/login with test@prepmind.ai/test123 returns valid JWT",
+    "GET /api/materials returns existing materials list"
+  ],
+  "failed": [
+    {
+      "area": "backend / routes/tests.py::extract_from_pdf",
+      "issue": "NameError: name 'answer_key_text' is not defined. The variable is referenced at line 304 ('if answer_key_text:') and 311 but never assigned. The code that should fetch the optional answer-key PDF text (when req.answer_key_material_id is provided) and default answer_key_text to '' otherwise is entirely missing between the source-text fetch (~line 298) and the 'Build answer-source instructions' block (line 302).",
+      "evidence": "curl POST /api/tests/extract-from-pdf -> 'Internal Server Error'. Backend log: File '/app/backend/routes/tests.py', line 304, in extract_from_pdf  if answer_key_text:  NameError: name 'answer_key_text' is not defined",
+      "priority": "HIGH"
+    },
+    {
+      "area": "backend / routes/tests.py::extract_from_pdf",
+      "issue": "max_chars values do not match the spec. PRD/request says source text should use max_chars=80000 and answer-key text max_chars=40000, but code still uses max_chars=24000 for both get_material_full_text and get_material_pages_text. The increased-limit acceptance criterion (#5: ~30 MCQs across 5 pages) cannot be met.",
+      "evidence": "tests.py lines 294 and 297: max_chars=24000",
+      "priority": "HIGH"
+    },
+    {
+      "area": "backend / routes/tests.py::extract_from_pdf",
+      "issue": "Even after fixing the NameError, the answer_key PDF feature has no implementation path that loads the second material. The ExtractFromPdfReq.answer_key_material_id field exists but no code fetches that material or its text. The 'answer_key_block' will always be empty.",
+      "evidence": "No db.materials.find_one({'id': req.answer_key_material_id, ...}) or get_material_full_text(req.answer_key_material_id, ...) call exists in extract_from_pdf.",
+      "priority": "HIGH"
+    }
+  ],
+  "action_items": [
+    "Add code in extract_from_pdf (between fetching source text and the 'Build answer-source instructions' block) to initialize answer_key_text='' and, when req.answer_key_material_id is provided, load the answer-key material (validate ownership + status=='ready') and call get_material_full_text(req.answer_key_material_id, max_chars=40000) to populate answer_key_text.",
+    "Bump max_chars in get_material_full_text / get_material_pages_text calls from 24000 to 80000 for the source text, per spec.",
+    "After the fix is applied, re-test the 3 extract scenarios listed in the review (no-key + fallback=false, no-key + fallback=true, separate answer-key PDF) plus the regression case."
+  ],
+  "success_rate": {"backend": "0% (extract-from-pdf 500s on every call)", "frontend": "not tested"},
+  "retest_needed": true,
+  "full_testing_deferred": true,
+  "test_credentials": "test@prepmind.ai / test123 (login verified working). /app/memory/test_credentials.md is essentially empty (header-only) — main agent should record canonical test users there."
+}
