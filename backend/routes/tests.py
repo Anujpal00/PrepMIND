@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from db import db
 from auth import get_current_user
-from mistral_client import mistral
+from mistral_client import mistral, MistralOverloadedError
 from routes.materials import get_material_full_text, get_material_pages_text
 
 logger = logging.getLogger(__name__)
@@ -395,9 +395,15 @@ Output ONLY valid JSON. No markdown. Include ALL questions you find."""
             json_mode=True,
         )
         data = json.loads(raw)
+    except MistralOverloadedError as e:
+        logger.error(f"Mistral overloaded: {e}")
+        raise HTTPException(status_code=503, detail="AI service is busy right now. Please try again in a minute.")
+    except json.JSONDecodeError as e:
+        logger.error(f"Extract JSON parse failed: {e}")
+        raise HTTPException(status_code=502, detail="AI returned an invalid response. Please try again or reduce the number of selected pages.")
     except Exception as e:
-        logger.error(f"Extract failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Extraction failed: {e}")
+        logger.exception(f"Extract failed: {e}")
+        raise HTTPException(status_code=500, detail="Extraction failed. Please try again with fewer pages.")
 
     questions = data.get("questions", [])
     clean = []

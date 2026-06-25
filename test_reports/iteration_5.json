@@ -1,0 +1,22 @@
+{
+  "summary": "Regression pass after the Mistral retry+fallback+friendly-error fix. Re-ran iteration_4 scenarios 2, 3, 4 against POST /api/tests/extract-from-pdf — all three still return HTTP 200 with expected response shape, proving the new wrapper at /app/backend/mistral_client.py did NOT break the happy path. Also reviewed the new code: MistralClient.chat loops 4 attempts per model with exponential backoff (1.5s, 3s, 6s, 12s) on 429/500/502/503/504, then falls back from mistral-large-latest to mistral-small-latest, raising MistralOverloadedError if both exhaust. routes/tests.py extract_from_pdf correctly maps MistralOverloadedError -> HTTP 503 with detail 'AI service is busy right now. Please try again in a minute.', JSONDecodeError -> 502, generic Exception -> 500 generic. Backend supervisor process is healthy (login API responds with valid JWT, materials list returns).",
+  "tested_scope": ["backend"],
+  "passed": [
+    "Login test@prepmind.ai/test123 -> 200 with JWT (backend boots cleanly, mistral_client import side effect did not crash startup).",
+    "Materials from iteration_3/4 still present and status=ready: source_no_key.txt 138d5eab, source_with_key.txt e44acf93, answer_key.txt bf8d9b4e.",
+    "Scenario 2 (inline 'Ans: X', material_id=e44acf93, no key, no fallback): HTTP 200, extracted_count=5, ai_answered=0, answer_source_summary='text_only', first question answer_source='text'.",
+    "Scenario 3 (separate answer-key PDF, material_id=138d5eab + answer_key_material_id=bf8d9b4e): HTTP 200, extracted_count=5, ai_answered=0, answer_source_summary='answer_key_pdf', first question answer_source='answer_key_pdf'.",
+    "Scenario 4 (AI fallback, material_id=138d5eab, use_ai_fallback=true): HTTP 200, extracted_count=5, ai_answered=5, answer_source_summary='ai_fallback', first question answer_source='ai_knowledge'.",
+    "Code review: mistral_client.py implements MistralOverloadedError, 4-attempt retry per model on 429/500/502/503/504, exponential backoff, automatic fallback to mistral-small-latest, raises MistralOverloadedError on full exhaustion. Embeddings path also retries 3 attempts.",
+    "Code review: extract_from_pdf in routes/tests.py wraps mistral.chat + json.loads in try/except: MistralOverloadedError -> HTTPException 503 'AI service is busy right now. Please try again in a minute.' (exact friendly message), json.JSONDecodeError -> 502 with retry/reduce-pages hint, generic Exception -> 500 generic. Logger calls present for each branch."
+  ],
+  "failed": [],
+  "action_items": [
+    "None blocking. Retry/fallback wrapper is wired correctly and the happy path still works for all three answer-source modes. Main agent can ship."
+  ],
+  "success_rate": {"backend": "100% (3 of 3 happy-path scenarios pass + 2 code-review checks pass)", "frontend": "not tested (per request)"},
+  "retest_needed": false,
+  "full_testing_deferred": true,
+  "test_credentials": "test@prepmind.ai / test123 verified working. /app/memory/test_credentials.md present.",
+  "notes": "503/502 user-visible error paths were verified by static code review only, not by live trigger (no mock mechanism + no live overload at test time). The static review is sufficient given the change is a straightforward try/except mapping."
+}

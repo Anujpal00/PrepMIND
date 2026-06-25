@@ -1,66 +1,80 @@
 """Mistral API client for chat completions and embeddings."""
 import os
+import asyncio
 import httpx
 import logging
-from typing import List, Optional
+from typing import List
 
 logger = logging.getLogger(__name__)
 
 MISTRAL_API_BASE = "https://api.mistral.ai/v1"
 
 
+class MistralOverloadedError(Exception):
+    """Raised when Mistral upstream is overloaded/rate-limited after all retries."""
+    pass
+
+
 class MistralClient:
     def __init__(self):
         self.api_key = os.environ["MISTRAL_API_KEY"]
         self.chat_model = os.environ.get("MISTRAL_CHAT_MODEL", "mistral-large-latest")
+        self.fallback_model = "mistral-small-latest"
         self.embed_model = os.environ.get("MISTRAL_EMBED_MODEL", "mistral-embed")
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
 
-    async def chat(
-        self,
-        messages: List[dict],
-        temperature: float = 0.3,
-        max_tokens: int = 2000,
-        json_mode: bool = False,
-    ) -> str:
-        payload = {
-            "model": self.chat_model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            r = await client.post(
-                f"{MISTRAL_API_BASE}/chat/completions",
-                headers=self.headers,
-                json=payload,
-            )
-            if r.status_code >= 400:
-                logger.error(f"Mistral chat error: {r.status_code} {r.text}")
-                r.raise_for_status()
-            data = r.json()
-            return data["choices"][0]["message"]["content"]
+    async def chat(self, messages, temperature=0.3, max_tokens=2000, json_mode=False):
+        last_err = None
+        for model in [self.chat_model, self.fallback_model]:
+            payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+            if json_mode:
+                payload["response_format"] = {"type": "json_object"}
+            for attempt in range(4):
+                try:
+                    async with httpx.AsyncClient(timeout=180.0) as client:
+                        r = await client.post(f"{MISTRAL_API_BASE}/chat/completions", headers=self.headers, json=payload)
+                    if r.status_code == 200:
+                        return r.json()["choices"][0]["message"]["content"]
+                    if r.status_code in (429, 500, 502, 503, 504):
+                        wait = (2 ** attempt) * 1.5
+                        logger.warning(f"Mistral {model} {r.status_code} (attempt {attempt+1}); retry in {wait}s")
+                        last_err = f"{r.status_code}: {r.text[:200]}"
+                        await asyncio.sleep(wait)
+                        continue
+                    logger.error(f"Mistral chat error {r.status_code}: {r.text[:500]}")
+                    r.raise_for_status()
+                except httpx.RequestError as e:
+                    logger.warning(f"Mistral network error (attempt {attempt+1}): {e}")
+                    last_err = str(e)
+                    await asyncio.sleep((2 ** attempt) * 1.5)
+            logger.warning(f"Model {model} exhausted retries; trying fallback")
+        raise MistralOverloadedError(f"Mistral AI is currently overloaded. Please try again in a minute. (last: {last_err})")
 
     async def embed(self, texts: List[str]) -> List[List[float]]:
         if not texts:
             return []
-        # Mistral embed accepts batch
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            r = await client.post(
-                f"{MISTRAL_API_BASE}/embeddings",
-                headers=self.headers,
-                json={"model": self.embed_model, "input": texts},
-            )
-            if r.status_code >= 400:
-                logger.error(f"Mistral embed error: {r.status_code} {r.text}")
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    r = await client.post(
+                        f"{MISTRAL_API_BASE}/embeddings",
+                        headers=self.headers,
+                        json={"model": self.embed_model, "input": texts},
+                    )
+                if r.status_code == 200:
+                    return [item["embedding"] for item in r.json()["data"]]
+                if r.status_code in (429, 500, 502, 503, 504):
+                    await asyncio.sleep((2 ** attempt) * 1.5)
+                    continue
+                logger.error(f"Mistral embed error {r.status_code}: {r.text[:300]}")
                 r.raise_for_status()
-            data = r.json()
-            return [item["embedding"] for item in data["data"]]
+            except httpx.RequestError as e:
+                logger.warning(f"Embed network error (attempt {attempt+1}): {e}")
+                await asyncio.sleep((2 ** attempt) * 1.5)
+        raise MistralOverloadedError("Mistral embeddings overloaded — please retry.")
 
 
 mistral = MistralClient()
