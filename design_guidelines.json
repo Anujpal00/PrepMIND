@@ -1,0 +1,111 @@
+{
+  "project_name": "PrepMind AI",
+  "domain": "EdTech / Government Exam Preparation",
+  "theme": "LIGHT (Primary), DARK (Supported)",
+  "archetype": "Archetype 4 (Swiss & High-Contrast)",
+  "mood": "Premium, Confident, Motivating, Focused on Serious Study, Authoritative",
+  "typography": {
+    "strategy": "Swiss Brutalist (Tech/Authority) infused with high legibility for long study hours.",
+    "fonts": {
+      "headings": {
+        "family": "Outfit",
+        "weights": ["400", "600", "700"],
+        "tracking": "tracking-tight",
+        "usage": "Use for Hero headings, Test titles, Dashboard metric numbers."
+      },
+      "body": {
+        "family": "Manrope",
+        "weights": ["400", "500", "600", "700"],
+        "usage": "Use for all reading materials, question text, chat bubbles, and general UI."
+      }
+    },
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl tracking-tight leading-none font-bold",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl tracking-tight leading-tight font-semibold",
+      "h3": "text-xl sm:text-2xl font-semibold",
+      "body": "text-base leading-relaxed",
+      "labels": "text-xs tracking-[0.2em] uppercase font-bold"
+    }
+  },
+  "color_palette": {
+    "light": {
+      "background": "#F8F9FA",
+      "surface": "#FFFFFF",
+      "text_primary": "#0F172A",
+      "text_secondary": "#475569",
+      "primary": "#0F172A",
+      "primary_hover": "#1E293B",
+      "accent_cta": "#EA580C",
+      "accent_hover": "#C2410C",
+      "success": "#15803D",
+      "warning": "#EAB308",
+      "error": "#DC2626",
+      "border": "#E2E8F0"
+    },
+    "dark": {
+      "background": "#0B0F19",
+      "surface": "#111827",
+      "text_primary": "#F8FAFC",
+      "text_secondary": "#94A3B8",
+      "primary": "#F8FAFC",
+      "primary_hover": "#E2E8F0",
+      "accent_cta": "#F97316",
+      "accent_hover": "#EA580C",
+      "success": "#22C55E",
+      "warning": "#FACC15",
+      "error": "#EF4444",
+      "border": "#1E293B"
+    }
+  },
+  "spacing_and_layout": {
+    "philosophy": "Generous Spacing, F-Pattern Scanning, Progressive Disclosure.",
+    "dashboard_grid": "MODE B: THE CONTROL ROOM GRID. grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6.",
+    "padding_rules": "Containers with borders MUST have internal padding (p-6 or p-8) to prevent text collision. Main page wrappers use px-4 md:px-8.",
+    "alignment": "Left-align dense text, questions, and test options. Only center-align Hero text or specific empty states."
+  },
+  "components": {
+    "buttons": "Sharp or slightly rounded (rounded-md). No excessive pill shapes unless for badges. High contrast. Primary uses bg-slate-900 text-white (light). Accent CTAs use bg-orange-600 text-white.",
+    "cards": "Subtle border (border-border), Flat background, no soft muddy shadows. Hover: Slight lift (-translate-y-1) + shadow-lg.",
+    "inputs_and_forms": "Shadcn customized. Solid borders (border-slate-300). Focus state MUST use focus:ring-2 focus:ring-orange-500 focus:border-orange-500. No native <input>.",
+    "navigation": "Sticky top nav with Crystal Glassmorphism (backdrop-blur-xl bg-white/80 or bg-slate-900/80) and 1px bottom border. Side navigation for dashboard modules.",
+    "test_engine": "Focus mode layout (hide main nav during tests). Persistent top bar timer. Side/Bottom palette for question jumping (color coded: Green=Answered, Red=Unanswered, Purple=Marked for Review).",
+    "chat_ui": "Split-screen layout (PDF/Material on Left, Chat on Right) similar to high-end academic reading tools.",
+    "charts": "Recharts. Use functional colors (Green for accuracy/growth, Orange for time taken). No hover-required data; core numbers must be visible instantly."
+  },
+  "icons_and_assets": {
+    "library": "lucide-react",
+    "images": [
+      {
+        "category": "hero_background",
+        "url": "https://images.pexels.com/photos/16504588/pexels-photo-16504588.jpeg",
+        "description": "Focused young Indian woman reading a textbook at a library desk, setting a serious study mood."
+      },
+      {
+        "category": "texture_abstract",
+        "url": "https://images.pexels.com/photos/18925028/pexels-photo-18925028.jpeg",
+        "description": "Clean, minimalist architectural abstract for subtle section backgrounds."
+      },
+      {
+        "category": "testimonial_avatar",
+        "url": "https://images.pexels.com/photos/15237309/pexels-photo-15237309.jpeg",
+        "description": "Portrait of young Indian student/professional."
+      }
+    ]
+  },
+  "accessibility": {
+    "contrast": "Ensure minimum 4.5:1 contrast for all text. Use text-shadow if placing text over images.",
+    "hover_states": "Always explicitly set text color on hover (e.g., hover:bg-slate-900 hover:text-white).",
+    "testing_attributes": "All interactive elements (buttons, links, form inputs, test options, tabs) MUST include 'data-testid' attributes (e.g., data-testid='start-mock-test-btn')."
+  },
+  "instructions_to_main_agent": [
+    "Initialize Tailwind config with the specified color palette and font families (Outfit and Manrope).",
+    "Apply 'Control Room' grid for the Analytics Dashboard to ensure density and clarity.",
+    "Build the 'Chat with Material' interface as a side-by-side split layout rather than a floating modal.",
+    "For the Test Engine: Design a rigorous, distraction-free UI. Implement a color-coded question palette (Answered, Not Answered, Marked for Review).",
+    "Avoid Vercel/Stripe default looks. Use the deep slate and energetic orange accents to create a distinctive brand identity.",
+    "Never use purely transparent backgrounds on headers; always use backdrop-blur or solid colors.",
+    "Implement charts using Recharts with clear, upfront data labels.",
+    "Ensure the application strictly uses .js files for React components as per environment setup.",
+    "Inject data-testid on every clickable or actionable element for testing."
+  ]
+}
