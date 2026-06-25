@@ -151,6 +151,29 @@ async def get_material(material_id: str, user=Depends(get_current_user)):
     return m
 
 
+@router.get("/{material_id}/pages")
+async def list_pages(material_id: str, user=Depends(get_current_user)):
+    """Return a list of pages with short preview snippets so the user can pick which to use."""
+    m = await db.materials.find_one(
+        {"id": material_id, "user_id": user["id"], "is_deleted": False}
+    )
+    if not m:
+        raise HTTPException(status_code=404, detail="Material not found")
+    chunks = await db.chunks.find(
+        {"material_id": material_id},
+        {"_id": 0, "page": 1, "text": 1, "order": 1},
+    ).sort("order", 1).to_list(5000)
+    # Group by page; keep first text snippet
+    pages: dict = {}
+    for c in chunks:
+        p = c.get("page", 1)
+        if p not in pages:
+            pages[p] = {"page": p, "preview": (c["text"] or "")[:180].replace("\n", " ").strip(), "char_count": 0}
+        pages[p]["char_count"] += len(c.get("text", ""))
+    out = sorted(pages.values(), key=lambda x: x["page"])
+    return {"material_id": material_id, "total_pages": len(out), "pages": out}
+
+
 @router.delete("/{material_id}")
 async def delete_material(material_id: str, user=Depends(get_current_user)):
     res = await db.materials.update_one(
@@ -197,4 +220,14 @@ async def get_material_full_text(material_id: str, max_chars: int = 12000) -> st
         {"material_id": material_id}, {"_id": 0, "embedding": 0}
     ).sort("order", 1).to_list(5000)
     text = "\n\n".join(c["text"] for c in chunks)
+    return text[:max_chars]
+
+
+async def get_material_pages_text(material_id: str, pages: list, max_chars: int = 24000) -> str:
+    """Return concatenated text for only the specified page numbers."""
+    chunks = await db.chunks.find(
+        {"material_id": material_id, "page": {"$in": pages}},
+        {"_id": 0, "embedding": 0},
+    ).sort("order", 1).to_list(5000)
+    text = "\n\n".join(f"[Page {c['page']}]\n{c['text']}" for c in chunks)
     return text[:max_chars]

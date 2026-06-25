@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from db import db
 from auth import get_current_user
 from mistral_client import mistral
-from routes.materials import get_material_full_text
+from routes.materials import get_material_full_text, get_material_pages_text
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +266,7 @@ async def all_results(user=Depends(get_current_user)):
 
 class ExtractFromPdfReq(BaseModel):
     material_id: str
+    pages: Optional[List[int]] = None  # if provided, only extract from these pages
 
 
 class StartExtractedReq(BaseModel):
@@ -287,13 +288,18 @@ async def extract_from_pdf(req: ExtractFromPdfReq, user=Depends(get_current_user
     if material.get("status") != "ready":
         raise HTTPException(status_code=400, detail="Material not ready")
 
-    text = await get_material_full_text(req.material_id, max_chars=24000)
+    if req.pages:
+        text = await get_material_pages_text(req.material_id, req.pages, max_chars=24000)
+        page_scope = f"pages {', '.join(str(p) for p in sorted(req.pages))}"
+    else:
+        text = await get_material_full_text(req.material_id, max_chars=24000)
+        page_scope = "the entire document"
     if not text.strip():
-        raise HTTPException(status_code=400, detail="No text content in material")
+        raise HTTPException(status_code=400, detail="No text content in the selected pages")
 
     prompt = f"""You are extracting questions from an Indian government exam paper / question bank.
 
-The text below is from a student-uploaded PDF. Your job is to find every MULTIPLE CHOICE QUESTION that already exists in the text and return it verbatim (do NOT invent new questions).
+The text below is from {page_scope} of a student-uploaded PDF. Your job is to find every MULTIPLE CHOICE QUESTION that already exists in the text and return it verbatim (do NOT invent new questions).
 
 Rules:
 - Only extract MCQs with 4 options (A/B/C/D, or 1/2/3/4, or i/ii/iii/iv). Skip fill-in-the-blanks and essay questions.

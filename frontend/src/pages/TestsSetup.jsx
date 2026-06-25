@@ -25,12 +25,41 @@ export default function TestsSetup() {
   const [mock, setMock] = useState({ exam: "SSC CGL", language: "en" });
   const [materials, setMaterials] = useState([]);
   const [pdfForm, setPdfForm] = useState({ material_id: "", duration: 30, negative: 0 });
+  const [pages, setPages] = useState([]); // [{page, preview, char_count}]
+  const [selectedPages, setSelectedPages] = useState(new Set());
+  const [loadingPages, setLoadingPages] = useState(false);
   const [extracted, setExtracted] = useState(null);
   const [extracting, setExtracting] = useState(false);
 
   useEffect(() => {
     api.get("/materials").then(({ data }) => setMaterials(data.filter(m => m.status === "ready")));
   }, []);
+
+  const loadPages = async (matId) => {
+    setPdfForm({ ...pdfForm, material_id: matId });
+    setExtracted(null);
+    setPages([]);
+    setSelectedPages(new Set());
+    if (!matId) return;
+    setLoadingPages(true);
+    try {
+      const { data } = await api.get(`/materials/${matId}/pages`);
+      setPages(data.pages);
+      setSelectedPages(new Set(data.pages.map(p => p.page))); // default: all selected
+    } catch (err) {
+      toast.error("Could not load PDF pages");
+    } finally { setLoadingPages(false); }
+  };
+
+  const togglePage = (p) => {
+    setSelectedPages(prev => {
+      const n = new Set(prev);
+      if (n.has(p)) n.delete(p); else n.add(p);
+      return n;
+    });
+  };
+  const selectAll = () => setSelectedPages(new Set(pages.map(p => p.page)));
+  const selectNone = () => setSelectedPages(new Set());
 
   const load = async () => {
     const [t, r] = await Promise.all([api.get("/tests"), api.get("/tests/results/all")]);
@@ -64,12 +93,16 @@ export default function TestsSetup() {
 
   const extractPdf = async () => {
     if (!pdfForm.material_id) { toast.error("Choose a PDF first"); return; }
+    if (selectedPages.size === 0) { toast.error("Select at least 1 page"); return; }
     setExtracting(true);
     setExtracted(null);
     try {
-      const { data } = await api.post("/tests/extract-from-pdf", { material_id: pdfForm.material_id });
+      const { data } = await api.post("/tests/extract-from-pdf", {
+        material_id: pdfForm.material_id,
+        pages: Array.from(selectedPages).sort((a,b) => a-b),
+      });
       setExtracted(data);
-      toast.success(`Found ${data.extracted_count} questions in your PDF!`);
+      toast.success(`Found ${data.extracted_count} questions in ${selectedPages.size} selected pages!`);
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Extraction failed");
     } finally { setExtracting(false); }
@@ -205,21 +238,60 @@ export default function TestsSetup() {
               {materials.length === 0 ? (
                 <p className="text-sm text-muted-foreground p-3 border border-dashed rounded">No ready materials. <Link to="/app/materials" className="text-orange-600 font-semibold underline">Upload a PDF</Link> first.</p>
               ) : (
-                <Select value={pdfForm.material_id} onValueChange={v => { setPdfForm({ ...pdfForm, material_id: v }); setExtracted(null); }}>
+                <Select value={pdfForm.material_id} onValueChange={loadPages}>
                   <SelectTrigger data-testid="pdf-material-select"><SelectValue placeholder="Select uploaded PDF…" /></SelectTrigger>
                   <SelectContent>{materials.map(m => <SelectItem key={m.id} value={m.id}>{m.filename}</SelectItem>)}</SelectContent>
                 </Select>
               )}
             </div>
 
+            {loadingPages && (
+              <div className="flex items-center justify-center py-6 text-sm text-muted-foreground" data-testid="pdf-loading-pages">
+                <Loader2 className="size-4 animate-spin mr-2" /> Loading pages…
+              </div>
+            )}
+
+            {pages.length > 0 && (
+              <div className="space-y-3" data-testid="pdf-page-picker">
+                <div className="flex items-center justify-between">
+                  <Label>Select pages with questions ({selectedPages.size}/{pages.length})</Label>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="ghost" onClick={selectAll} data-testid="pdf-select-all">Select all</Button>
+                    <Button size="sm" variant="ghost" onClick={selectNone} data-testid="pdf-select-none">Clear</Button>
+                  </div>
+                </div>
+                <div className="max-h-72 overflow-y-auto border border-border rounded-md divide-y divide-border">
+                  {pages.map(p => {
+                    const checked = selectedPages.has(p.page);
+                    return (
+                      <label key={p.page} className={`flex gap-3 px-4 py-3 text-sm cursor-pointer transition-colors ${checked ? "bg-orange-50 dark:bg-orange-900/10" : "hover:bg-slate-50 dark:hover:bg-slate-800"}`} data-testid={`pdf-page-${p.page}`}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => togglePage(p.page)}
+                          className="size-4 mt-0.5 accent-orange-600"
+                          data-testid={`pdf-page-checkbox-${p.page}`}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="font-semibold text-xs uppercase tracking-wider text-slate-700 dark:text-slate-300">Page {p.page} <span className="text-muted-foreground font-normal normal-case tracking-normal">· {p.char_count} chars</span></div>
+                          <div className="text-xs text-muted-foreground line-clamp-2 mt-0.5">{p.preview || "(no preview)"}</div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-muted-foreground">Tip: deselect cover pages, instructions, and answer keys to avoid extracting noise.</p>
+              </div>
+            )}
+
             <Button
               onClick={extractPdf}
-              disabled={!pdfForm.material_id || extracting}
+              disabled={!pdfForm.material_id || extracting || selectedPages.size === 0}
               variant="outline"
               className="w-full h-11"
               data-testid="pdf-extract-btn"
             >
-              {extracting ? <><Loader2 className="size-4 mr-2 animate-spin" /> Scanning PDF for questions (30-60s)…</> : <><FileSearch className="size-4 mr-2" /> Extract questions from PDF</>}
+              {extracting ? <><Loader2 className="size-4 mr-2 animate-spin" /> Scanning {selectedPages.size} page(s) (30-60s)…</> : <><FileSearch className="size-4 mr-2" /> Extract questions from {selectedPages.size} selected page(s)</>}
             </Button>
 
             {extracted && (
