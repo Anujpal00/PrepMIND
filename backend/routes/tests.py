@@ -290,11 +290,12 @@ async def extract_from_pdf(req: ExtractFromPdfReq, user=Depends(get_current_user
     if material.get("status") != "ready":
         raise HTTPException(status_code=400, detail="Material not ready")
 
+    # Cap source text to keep extraction within Cloudflare 100s edge timeout.
     if req.pages:
-        text = await get_material_pages_text(req.material_id, req.pages, max_chars=80000)
+        text = await get_material_pages_text(req.material_id, req.pages, max_chars=30000)
         page_scope = f"pages {', '.join(str(p) for p in sorted(req.pages))}"
     else:
-        text = await get_material_full_text(req.material_id, max_chars=80000)
+        text = await get_material_full_text(req.material_id, max_chars=30000)
         page_scope = "the entire document"
     if not text.strip():
         raise HTTPException(status_code=400, detail="No text content in the selected pages")
@@ -391,7 +392,7 @@ Output ONLY valid JSON. No markdown. Include ALL questions you find."""
                 {"role": "user", "content": prompt},
             ],
             temperature=0.0,
-            max_tokens=16000,
+            max_tokens=8000,
             json_mode=True,
         )
         data = json.loads(raw)

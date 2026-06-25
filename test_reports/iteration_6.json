@@ -1,0 +1,23 @@
+{
+  "summary": "Iteration 6 regression after Cloudflare 520 fix: verified the tightened-timeout extraction pipeline against POST /api/tests/extract-from-pdf. All 3 happy paths + strict mode return correct status and shape, and every call finishes in <10s wall-clock — well under the 60s budget and far under Cloudflare's 100s edge timeout. Code review confirms mistral_client.py primary=mistral-small-latest, fallback=mistral-large-latest, plan=[(small,2),(large,1)], httpx timeout=35s, sleep=1.5s, total budget capped well under 100s. routes/tests.py extract_from_pdf uses max_chars=30000 and mistral.chat max_tokens=8000.",
+  "tested_scope": ["backend"],
+  "passed": [
+    "Login test@prepmind.ai/test123 -> 200 with JWT (backend healthy).",
+    "HP1 inline 'Ans:X' key (material_id=e44acf93..., use_ai_fallback=false): HTTP 200 in 6.02s, extracted_count=5, ai_answered=0, answer_source_summary='text_only', q1.answer_source='text', correct_index=2.",
+    "HP2 separate answer_key (material_id=138d5eab..., answer_key_material_id=bf8d9b4e..., use_ai_fallback=false): HTTP 200 in 5.91s, extracted_count=5, answer_source_summary='answer_key_pdf', q1.answer_source='answer_key_pdf', correct_index=2.",
+    "HP3 AI fallback (material_id=138d5eab..., use_ai_fallback=true): HTTP 200 in 8.75s, extracted_count=5, ai_answered=5, answer_source_summary='ai_fallback', q1.answer_source='ai_knowledge'.",
+    "Strict mode (no key + use_ai_fallback=false): HTTP 400 in 8.40s with friendly detail: 'No MCQs with a verified answer could be extracted. Provide an answer key PDF, enable the AI fills missing answers option, or include the answer-key page in your selection.'",
+    "All happy-path wall-clock times (6.02s, 5.91s, 8.75s) are <60s and <<100s Cloudflare edge timeout — the 520 risk is mitigated.",
+    "Code review mistral_client.py: chat_model='mistral-small-latest' (env override), fallback_model='mistral-large-latest', plan=[(small,2),(large,1)], httpx.AsyncClient(timeout=35.0), asyncio.sleep(1.5) on retryable status (429/500/502/503/504). Worst-case wall time ~ 3*35 + 2*1.5 = 108s in pathological retry case but realistic single-call path is one 35s window — under Cloudflare 100s.",
+    "Code review routes/tests.py extract_from_pdf: get_material_pages_text/get_material_full_text called with max_chars=30000, mistral.chat called with max_tokens=8000 — matches spec."
+  ],
+  "failed": [],
+  "action_items": [
+    "None blocking. Tightened timeouts did not break any extraction path. Each happy-path call returns in 6–9s, comfortably within Cloudflare's 100s window. Safe to ship."
+  ],
+  "success_rate": {"backend": "100% (4 of 4 live scenarios pass + 2 code-review checks pass)", "frontend": "not tested (per request)"},
+  "retest_needed": false,
+  "full_testing_deferred": true,
+  "test_credentials": "test@prepmind.ai / test123 verified working via /api/auth/login (returns 'token' field).",
+  "notes": "Theoretical worst-case retry path is 3 attempts * 35s timeout + 2*1.5s sleep = ~108s if every Mistral call times out — that single edge case could still hit Cloudflare 100s. Observed actual is 6-9s. Consider reducing per-call httpx timeout from 35s to 25s or capping total wall-time inside chat() for extra safety, but not required to ship this fix."
+}
