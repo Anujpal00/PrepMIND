@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from db import db
 from auth import get_current_user
 from mistral_client import mistral
+from routes.materials import get_material_full_text
 
 logger = logging.getLogger(__name__)
 
@@ -259,3 +260,167 @@ async def all_results(user=Depends(get_current_user)):
         {"_id": 0, "answer_details": 0},
     ).sort("submitted_at", -1)
     return await cursor.to_list(200)
+
+
+# ===== NEW FEATURE: Extract questions from uploaded PDF and run as mock =====
+
+class ExtractFromPdfReq(BaseModel):
+    material_id: str
+
+
+class StartExtractedReq(BaseModel):
+    material_id: str
+    questions: List[dict]  # extracted question objects from /extract
+    title: Optional[str] = None
+    duration_minutes: int = Field(30, ge=1, le=300)
+    negative_marks: float = Field(0.0, ge=0, le=2)
+
+
+@router.post("/extract-from-pdf")
+async def extract_from_pdf(req: ExtractFromPdfReq, user=Depends(get_current_user)):
+    """Extract MCQ-style questions that EXIST in the uploaded material (PYQ papers, question banks)."""
+    material = await db.materials.find_one(
+        {"id": req.material_id, "user_id": user["id"], "is_deleted": False}
+    )
+    if not material:
+        raise HTTPException(status_code=404, detail="Material not found")
+    if material.get("status") != "ready":
+        raise HTTPException(status_code=400, detail="Material not ready")
+
+    text = await get_material_full_text(req.material_id, max_chars=24000)
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="No text content in material")
+
+    prompt = f"""You are extracting questions from an Indian government exam paper / question bank.
+
+The text below is from a student-uploaded PDF. Your job is to find every MULTIPLE CHOICE QUESTION that already exists in the text and return it verbatim (do NOT invent new questions).
+
+Rules:
+- Only extract MCQs with 4 options (A/B/C/D, or 1/2/3/4, or i/ii/iii/iv). Skip fill-in-the-blanks and essay questions.
+- Keep the question text, options, and correct answer exactly as written.
+- If the correct answer is given in the text (e.g. "Answer: B" or shown in an answer key), set correct_index accordingly (0=A,1=B,2=C,3=D). If the answer is not stated anywhere, set correct_index to null.
+- Include explanation only if it is present in the text; else empty string.
+- Skip duplicate questions.
+- Limit to at most 100 questions.
+
+Return STRICT JSON:
+{{
+  "questions": [
+    {{
+      "question": "exact question text",
+      "options": ["opt A","opt B","opt C","opt D"],
+      "correct_index": 0,
+      "explanation": "",
+      "topic": "infer subject/topic e.g. History"
+    }}
+  ]
+}}
+
+TEXT:
+---
+{text}
+---
+
+Output ONLY valid JSON. No markdown."""
+
+    try:
+        raw = await mistral.chat(
+            messages=[
+                {"role": "system", "content": "You extract MCQs verbatim from exam papers and return strict JSON."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+            max_tokens=8000,
+            json_mode=True,
+        )
+        data = json.loads(raw)
+    except Exception as e:
+        logger.error(f"Extract failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Extraction failed: {e}")
+
+    questions = data.get("questions", [])
+    # Filter invalid entries
+    clean = []
+    for q in questions:
+        if not isinstance(q, dict): continue
+        opts = q.get("options") or []
+        if len(opts) != 4: continue
+        if not q.get("question"): continue
+        ci = q.get("correct_index")
+        if ci is None or not isinstance(ci, int) or not (0 <= ci <= 3):
+            # If answer missing, default to 0 but mark unknown
+            ci = 0
+        clean.append({
+            "question": str(q.get("question", "")).strip(),
+            "options": [str(o) for o in opts],
+            "correct_index": ci,
+            "explanation": str(q.get("explanation", "") or "").strip(),
+            "topic": str(q.get("topic", "") or "").strip(),
+        })
+
+    if not clean:
+        raise HTTPException(status_code=400, detail="No MCQs found in this material. The PDF may not contain question-answer format.")
+
+    return {
+        "material_id": req.material_id,
+        "material_filename": material.get("filename"),
+        "extracted_count": len(clean),
+        "questions": clean,
+    }
+
+
+@router.post("/start-from-extracted")
+async def start_from_extracted(req: StartExtractedReq, user=Depends(get_current_user)):
+    """Create a test from extracted (or user-edited) questions with user-chosen duration & negative marks."""
+    material = await db.materials.find_one(
+        {"id": req.material_id, "user_id": user["id"], "is_deleted": False}
+    )
+    if not material:
+        raise HTTPException(status_code=404, detail="Material not found")
+
+    if not req.questions:
+        raise HTTPException(status_code=400, detail="No questions provided")
+
+    questions_doc = []
+    for q in req.questions:
+        opts = q.get("options") or []
+        if len(opts) != 4 or not q.get("question"):
+            continue
+        questions_doc.append({
+            "id": str(uuid.uuid4()),
+            "section": q.get("topic") or "Extracted",
+            "subject": q.get("topic") or "From PDF",
+            "topic": q.get("topic") or "",
+            "question": q["question"],
+            "options": [str(o) for o in opts],
+            "correct_index": int(q.get("correct_index", 0)),
+            "explanation": q.get("explanation", ""),
+            "marks": 1.0,
+        })
+
+    if not questions_doc:
+        raise HTTPException(status_code=400, detail="No valid questions")
+
+    test_id = str(uuid.uuid4())
+    title = req.title or f"PDF Mock · {material.get('filename')}"
+    test_doc = {
+        "id": test_id,
+        "user_id": user["id"],
+        "test_type": "pdf_extracted",
+        "title": title,
+        "exam": "From PDF",
+        "subject": None,
+        "topic": None,
+        "language": "en",
+        "duration_minutes": req.duration_minutes,
+        "negative_marks": req.negative_marks,
+        "questions": questions_doc,
+        "total_questions": len(questions_doc),
+        "status": "ready",
+        "source_material_id": req.material_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.tests.insert_one(test_doc)
+    test_doc.pop("_id", None)
+    return test_doc
+

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import api from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
-import { ClipboardList, Loader2, Trophy, PlayCircle, Sparkles, Timer } from "lucide-react";
+import { ClipboardList, Loader2, Trophy, PlayCircle, Sparkles, Timer, FileSearch, FileText } from "lucide-react";
 import { toast } from "sonner";
 
 const EXAMS = ["SSC CGL", "SSC CHSL", "UPSC", "Banking", "Railway"];
@@ -23,6 +23,14 @@ export default function TestsSetup() {
   const [results, setResults] = useState([]);
   const [topic, setTopic] = useState({ exam: "SSC CGL", subject: "General Awareness", topic: "", count: 10, difficulty: "medium", language: "en" });
   const [mock, setMock] = useState({ exam: "SSC CGL", language: "en" });
+  const [materials, setMaterials] = useState([]);
+  const [pdfForm, setPdfForm] = useState({ material_id: "", duration: 30, negative: 0 });
+  const [extracted, setExtracted] = useState(null);
+  const [extracting, setExtracting] = useState(false);
+
+  useEffect(() => {
+    api.get("/materials").then(({ data }) => setMaterials(data.filter(m => m.status === "ready")));
+  }, []);
 
   const load = async () => {
     const [t, r] = await Promise.all([api.get("/tests"), api.get("/tests/results/all")]);
@@ -54,6 +62,37 @@ export default function TestsSetup() {
     } finally { setBusy(false); }
   };
 
+  const extractPdf = async () => {
+    if (!pdfForm.material_id) { toast.error("Choose a PDF first"); return; }
+    setExtracting(true);
+    setExtracted(null);
+    try {
+      const { data } = await api.post("/tests/extract-from-pdf", { material_id: pdfForm.material_id });
+      setExtracted(data);
+      toast.success(`Found ${data.extracted_count} questions in your PDF!`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Extraction failed");
+    } finally { setExtracting(false); }
+  };
+
+  const startPdfMock = async () => {
+    if (!extracted) return;
+    setBusy(true);
+    try {
+      const { data } = await api.post("/tests/start-from-extracted", {
+        material_id: pdfForm.material_id,
+        questions: extracted.questions,
+        title: `PDF Mock · ${extracted.material_filename}`,
+        duration_minutes: pdfForm.duration,
+        negative_marks: pdfForm.negative,
+      });
+      toast.success("Mock starting…");
+      navigate(`/app/test/${data.id}`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Failed to start");
+    } finally { setBusy(false); }
+  };
+
   return (
     <div className="space-y-6" data-testid="tests-page">
       <div>
@@ -65,6 +104,7 @@ export default function TestsSetup() {
         <TabsList data-testid="tests-tabs">
           <TabsTrigger value="topic" data-testid="tests-tab-topic">Topic Test</TabsTrigger>
           <TabsTrigger value="mock" data-testid="tests-tab-mock">Full Mock</TabsTrigger>
+          <TabsTrigger value="pdf" data-testid="tests-tab-pdf">From PDF</TabsTrigger>
           <TabsTrigger value="history" data-testid="tests-tab-history">History</TabsTrigger>
         </TabsList>
 
@@ -150,6 +190,83 @@ export default function TestsSetup() {
             <Button onClick={startMock} disabled={busy} className="w-full h-11 bg-orange-600 hover:bg-orange-700 text-white" data-testid="mock-start-btn">
               {busy ? <><Loader2 className="size-4 mr-2 animate-spin" /> Building 100Q mock (60-90s)…</> : <><Trophy className="size-4 mr-2" /> Generate & Start Mock</>}
             </Button>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="pdf">
+          <Card className="p-6 space-y-5" data-testid="pdf-mock-card">
+            <div className="bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-900/40 rounded-md p-4 text-sm">
+              <div className="font-semibold mb-1 flex items-center gap-2"><FileSearch className="size-4 text-orange-600" /> Real Mock from your PDF</div>
+              <p className="text-muted-foreground">Upload a PYQ paper or question bank in <strong>Materials</strong>. We'll detect all MCQs inside and let you attempt them in a real test environment with your own timer.</p>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Choose PDF</Label>
+              {materials.length === 0 ? (
+                <p className="text-sm text-muted-foreground p-3 border border-dashed rounded">No ready materials. <Link to="/app/materials" className="text-orange-600 font-semibold underline">Upload a PDF</Link> first.</p>
+              ) : (
+                <Select value={pdfForm.material_id} onValueChange={v => { setPdfForm({ ...pdfForm, material_id: v }); setExtracted(null); }}>
+                  <SelectTrigger data-testid="pdf-material-select"><SelectValue placeholder="Select uploaded PDF…" /></SelectTrigger>
+                  <SelectContent>{materials.map(m => <SelectItem key={m.id} value={m.id}>{m.filename}</SelectItem>)}</SelectContent>
+                </Select>
+              )}
+            </div>
+
+            <Button
+              onClick={extractPdf}
+              disabled={!pdfForm.material_id || extracting}
+              variant="outline"
+              className="w-full h-11"
+              data-testid="pdf-extract-btn"
+            >
+              {extracting ? <><Loader2 className="size-4 mr-2 animate-spin" /> Scanning PDF for questions (30-60s)…</> : <><FileSearch className="size-4 mr-2" /> Extract questions from PDF</>}
+            </Button>
+
+            {extracted && (
+              <div className="border border-emerald-300 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-900/10 rounded-md p-4 space-y-4" data-testid="pdf-extracted-preview">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <FileText className="size-4 text-emerald-600" />
+                    <span className="font-semibold">{extracted.extracted_count} questions found</span>
+                  </div>
+                  <span className="text-xs text-muted-foreground truncate max-w-[200px]">{extracted.material_filename}</span>
+                </div>
+
+                <div className="max-h-48 overflow-y-auto space-y-2 pr-2 text-sm">
+                  {extracted.questions.slice(0, 5).map((q, i) => (
+                    <div key={i} className="p-2.5 rounded border border-border bg-card" data-testid={`pdf-preview-q-${i}`}>
+                      <div className="font-medium line-clamp-2">{i + 1}. {q.question}</div>
+                      <div className="text-xs text-muted-foreground mt-1">{q.options.length} options · {q.topic || "Untagged"}</div>
+                    </div>
+                  ))}
+                  {extracted.questions.length > 5 && <div className="text-xs text-center text-muted-foreground">…and {extracted.questions.length - 5} more</div>}
+                </div>
+
+                <div className="grid md:grid-cols-2 gap-4 pt-2 border-t border-border">
+                  <div className="space-y-2">
+                    <div className="flex justify-between"><Label>Duration (minutes)</Label><span className="text-sm font-semibold">{pdfForm.duration} min</span></div>
+                    <Slider value={[pdfForm.duration]} min={5} max={180} step={5} onValueChange={([v]) => setPdfForm({ ...pdfForm, duration: v })} data-testid="pdf-duration-slider" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Negative marks per wrong</Label>
+                    <Select value={String(pdfForm.negative)} onValueChange={v => setPdfForm({ ...pdfForm, negative: parseFloat(v) })}>
+                      <SelectTrigger data-testid="pdf-negative-select"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="0">No negative</SelectItem>
+                        <SelectItem value="0.25">-0.25</SelectItem>
+                        <SelectItem value="0.33">-0.33</SelectItem>
+                        <SelectItem value="0.5">-0.5</SelectItem>
+                        <SelectItem value="1">-1.0</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <Button onClick={startPdfMock} disabled={busy} className="w-full h-11 bg-orange-600 hover:bg-orange-700 text-white" data-testid="pdf-start-mock-btn">
+                  {busy ? <><Loader2 className="size-4 mr-2 animate-spin" /> Starting…</> : <><PlayCircle className="size-4 mr-2" /> Start Mock ({extracted.extracted_count}Q · {pdfForm.duration}m)</>}
+                </Button>
+              </div>
+            )}
           </Card>
         </TabsContent>
 
