@@ -1,6 +1,7 @@
 """PrepMind AI - FastAPI backend entrypoint."""
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -27,9 +28,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="PrepMind AI", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        init_storage()
+        logger.info("Object storage initialized")
+    except Exception as e:
+        logger.error(f"Storage init failed (will retry on use): {e}")
+    try:
+        await client[os.environ["DB_NAME"]].users.create_index("email", unique=True)
+        await client[os.environ["DB_NAME"]].materials.create_index([("user_id", 1), ("created_at", -1)])
+        await client[os.environ["DB_NAME"]].chunks.create_index("material_id")
+        await client[os.environ["DB_NAME"]].results.create_index([("user_id", 1), ("submitted_at", -1)])
+    except Exception as e:
+        logger.warning(f"Index creation: {e}")
+    yield
+    client.close()
+
+app = FastAPI(title="PrepMind AI", version="1.0.0", lifespan=lifespan)
 
 api_router = APIRouter(prefix="/api")
+
+
+if __name__ == "__main__":
+    # Start with Uvicorn when running `python server.py` directly
+    import uvicorn
+
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=True)
 
 
 @api_router.get("/")
@@ -61,23 +87,3 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-async def startup():
-    try:
-        init_storage()
-        logger.info("Object storage initialized")
-    except Exception as e:
-        logger.error(f"Storage init failed (will retry on use): {e}")
-    # Indexes
-    try:
-        await client[os.environ["DB_NAME"]].users.create_index("email", unique=True)
-        await client[os.environ["DB_NAME"]].materials.create_index([("user_id", 1), ("created_at", -1)])
-        await client[os.environ["DB_NAME"]].chunks.create_index("material_id")
-        await client[os.environ["DB_NAME"]].results.create_index([("user_id", 1), ("submitted_at", -1)])
-    except Exception as e:
-        logger.warning(f"Index creation: {e}")
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    client.close()
