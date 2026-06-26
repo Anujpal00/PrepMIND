@@ -31,7 +31,6 @@ class MistralClient:
     async def chat(self, messages, temperature=0.3, max_tokens=2000, json_mode=False):
         """Total time budget capped at ~75s to stay under Cloudflare 100s edge timeout."""
         last_err = None
-        # 2 attempts on primary (small), 1 on fallback (large). Per-call timeout 35s.
         plan = [(self.chat_model, 2), (self.fallback_model, 1)]
         for model, max_attempts in plan:
             payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
@@ -51,15 +50,35 @@ class MistralClient:
                     logger.error(f"Mistral chat error {r.status_code}: {r.text[:500]}")
                     r.raise_for_status()
                 except httpx.TimeoutException as e:
-                    logger.warning(f"Mistral {model} timeout (attempt {attempt+1}): {e}")
+                    logger.warning(f"Mistral {model} timeout: {e}")
                     last_err = f"timeout: {e}"
                     continue
                 except httpx.RequestError as e:
                     logger.warning(f"Mistral {model} network error: {e}")
                     last_err = str(e)
                     await asyncio.sleep(1.0)
-            logger.warning(f"Model {model} exhausted; trying next")
-        raise MistralOverloadedError(f"Mistral AI is currently overloaded. Please try again in a minute. (last: {last_err})")
+        # Mistral exhausted — try Groq fallback
+        groq_key = os.environ.get("GROQ_API_KEY")
+        if groq_key:
+            logger.warning("Mistral exhausted; falling back to Groq")
+            try:
+                payload = {"model": "llama-3.3-70b-versatile", "messages": messages, "temperature": temperature, "max_tokens": min(max_tokens, 8000)}
+                if json_mode:
+                    payload["response_format"] = {"type": "json_object"}
+                async with httpx.AsyncClient(timeout=45.0) as client:
+                    r = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+                        json=payload,
+                    )
+                if r.status_code == 200:
+                    return r.json()["choices"][0]["message"]["content"]
+                logger.error(f"Groq fallback error {r.status_code}: {r.text[:300]}")
+                last_err = f"groq {r.status_code}"
+            except Exception as e:
+                logger.error(f"Groq fallback failed: {e}")
+                last_err = f"groq: {e}"
+        raise MistralOverloadedError(f"AI service is currently overloaded. Please try again in a minute. (last: {last_err})")
 
     async def embed(self, texts: List[str]) -> List[List[float]]:
         if not texts:

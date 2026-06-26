@@ -1,0 +1,33 @@
+{
+  "summary": "Backend Groq fallback verification for PrepMind. Code review of mistral_client.py PASSED. Happy path (Mistral primary) PASSED end-to-end (job_id in 108ms, done in ~10s). Direct Groq API key check PASSED (llama-3.3-70b-versatile responds). However, the 'invalid MISTRAL_API_KEY' fallback test did NOT trigger Groq because 401 Unauthorized is not in the fallback retry list — only 429/500/502/503/504 trigger the Mistral retry/fallback chain. Per design, 429 path should work, but could not be force-triggered. MISTRAL_API_KEY restored to original value.",
+  "tested_scope": ["backend", "integration", "auth"],
+  "passed": [
+    "Code review: Groq fallback block in mistral_client.py lines 60-81 correctly uses api.groq.com/openai/v1/chat/completions, model llama-3.3-70b-versatile, preserves json_mode response_format, caps max_tokens at min(max_tokens, 8000), 45s timeout.",
+    "GROQ_API_KEY present in /app/backend/.env and valid (direct curl to Groq returns HTTP 200 with 'OK').",
+    "Login (test@prepmind.ai/test123) returns valid JWT.",
+    "POST /api/tests/extract-from-pdf returns job_id in 108ms (well under 2s target) — async pattern intact.",
+    "GET /api/tests/extract-job/{job_id} polling transitions processing → done in ~10s using Mistral primary (key restored).",
+    "Backend restart via supervisor works cleanly; /api/health returns healthy."
+  ],
+  "failed": [
+    {
+      "area": "Fallback trigger via invalid key",
+      "issue": "Setting MISTRAL_API_KEY='invalid' did NOT trigger Groq fallback. Mistral returns 401 Unauthorized, which falls through to `r.raise_for_status()` at line 50-51 of mistral_client.py and raises HTTPStatusError, bypassing the Groq block entirely. The retry/fallback list only includes 429/500/502/503/504.",
+      "evidence": "Backend log: 'Mistral chat error 401: {\"detail\":\"Unauthorized\"}' followed by httpx.HTTPStatusError, no 'Mistral exhausted; falling back to Groq' line. Job status returned 'failed' with generic 'Extraction failed. Please try again with fewer pages.' error.",
+      "priority": "MEDIUM"
+    }
+  ],
+  "action_items": [
+    "If the intended test scenario (invalidating Mistral key to force Groq) should work, add 401/403 to the fallback-triggering status list in mistral_client.py line 45, OR add a generic except branch that routes any non-retryable Mistral failure to Groq before raising.",
+    "If only 429/5xx fallback is intended (per original spec), then design is correct and the 'invalid key' test method is not a valid simulation of the fallback path. Consider documenting this in PRD or adding a hidden test toggle to force Groq routing (e.g., FORCE_GROQ=1 env var) for verification.",
+    "No code changes were made by this testing agent; MISTRAL_API_KEY restored to ysA7FMFxi132AxXzmeqLd9uGLCTuGByw."
+  ],
+  "success_rate": {"backend": "85%", "frontend": "skipped"},
+  "retest_needed": true,
+  "full_testing_deferred": true,
+  "notes": {
+    "env_restored": true,
+    "MISTRAL_API_KEY": "restored to original",
+    "GROQ_API_KEY": "present and verified valid via direct API call"
+  }
+}
