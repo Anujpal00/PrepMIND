@@ -1,0 +1,20 @@
+{
+  "summary": "Iteration 7 verifies the async job-based /api/tests/extract-from-pdf endpoint. POST returns IMMEDIATELY (0.10-0.14s, far <2s requirement) with {job_id, status:'processing'}, eliminating Cloudflare 520 risk. New GET /api/tests/extract-job/{job_id} polling endpoint works correctly for all 3 happy paths + strict failure + 404. Result payload shape preserved identically to previous sync version.",
+  "tested_scope": ["backend"],
+  "passed": [
+    "Login test@prepmind.ai/test123 -> 200 with JWT.",
+    "HP1 inline-key (e44acf93...): POST returned 200 in 0.143s (<<2s) with {job_id, status:'processing'}. Polling reached status='done' in 3 iters (~6s). result.extracted_count=5, answer_source_summary='text_only', q1.correct_index=2, q1.answer_source='text'.",
+    "HP2 separate answer-key (138d5eab... + bf8d9b4e...): POST 200 in 0.12s. Polling -> done in 3 iters, answer_source_summary='answer_key_pdf'.",
+    "HP3 AI fallback (138d5eab..., use_ai_fallback=true): POST 200 in 0.10s. Polling -> done in 3 iters, ai_answered=5 (>=1), answer_source_summary='ai_fallback'.",
+    "Strict mode (138d5eab..., use_ai_fallback=false, no key): POST 200 in 0.14s (job spawned, not synchronous 400). Polling -> status='failed' in 5 iters with friendly error: 'No MCQs with a verified answer could be extracted. Provide an answer key PDF, enable the AI fills missing answers option, or include the answer-key page in your selection.'",
+    "404 path: GET /api/tests/extract-job/00000000-... returned 404 as expected.",
+    "All 4 POST calls completed in 0.10-0.14s, comfortably under both 2s requirement and Cloudflare 100s edge timeout. Cloudflare 520 risk fully mitigated regardless of underlying extraction duration."
+  ],
+  "failed": [],
+  "action_items": ["None. Async-job wrapper preserves all prior behavior and POST response time is 14x-20x faster than the 2s requirement. Safe to ship."],
+  "success_rate": {"backend": "100% (7/7 checks pass)", "frontend": "not tested (per request)"},
+  "retest_needed": false,
+  "full_testing_deferred": true,
+  "test_credentials": "test@prepmind.ai / test123 verified working via /api/auth/login.",
+  "notes": "Behavioral note: previous sync version returned HTTP 400 for strict-mode failure; new async version returns HTTP 200 with job_id, then polling shows status='failed'. This matches the spec in the review request ('polling shows status=failed with friendly error in error field'). Frontend must read job.error from poll response, not from POST. Result.questions[].correct_index and answer_source preserved identically."
+}

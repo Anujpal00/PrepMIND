@@ -1,6 +1,7 @@
 """Topic tests, mock tests, submissions, results."""
 import uuid
 import json
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Literal
@@ -10,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from db import db
 from auth import get_current_user
-from mistral_client import mistral
+from mistral_client import mistral, MistralOverloadedError
 from routes.materials import get_material_full_text, get_material_pages_text
 
 logger = logging.getLogger(__name__)
@@ -267,6 +268,8 @@ async def all_results(user=Depends(get_current_user)):
 class ExtractFromPdfReq(BaseModel):
     material_id: str
     pages: Optional[List[int]] = None  # if provided, only extract from these pages
+    answer_key_material_id: Optional[str] = None  # separate PDF holding the answer key
+    use_ai_fallback: bool = False  # if no key found, let AI use its own knowledge to set the answer
 
 
 class StartExtractedReq(BaseModel):
@@ -279,7 +282,7 @@ class StartExtractedReq(BaseModel):
 
 @router.post("/extract-from-pdf")
 async def extract_from_pdf(req: ExtractFromPdfReq, user=Depends(get_current_user)):
-    """Extract MCQ-style questions that EXIST in the uploaded material (PYQ papers, question banks)."""
+    """Kicks off extraction in the background; returns a job_id to poll."""
     material = await db.materials.find_one(
         {"id": req.material_id, "user_id": user["id"], "is_deleted": False}
     )
@@ -287,37 +290,107 @@ async def extract_from_pdf(req: ExtractFromPdfReq, user=Depends(get_current_user
         raise HTTPException(status_code=404, detail="Material not found")
     if material.get("status") != "ready":
         raise HTTPException(status_code=400, detail="Material not ready")
+    job_id = str(uuid.uuid4())
+    await db.extract_jobs.insert_one({
+        "id": job_id, "user_id": user["id"], "material_id": req.material_id,
+        "status": "processing", "result": None, "error": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    asyncio.create_task(_run_extract_job(job_id, req, user, material))
+    return {"job_id": job_id, "status": "processing"}
 
+
+@router.get("/extract-job/{job_id}")
+async def extract_job_status(job_id: str, user=Depends(get_current_user)):
+    j = await db.extract_jobs.find_one({"id": job_id, "user_id": user["id"]}, {"_id": 0})
+    if not j:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return j
+
+
+async def _run_extract_job(job_id: str, req: "ExtractFromPdfReq", user: dict, material: dict):
+    try:
+        result = await _do_extract(req, user, material)
+        await db.extract_jobs.update_one({"id": job_id}, {"$set": {"status": "done", "result": result}})
+    except HTTPException as e:
+        await db.extract_jobs.update_one({"id": job_id}, {"$set": {"status": "failed", "error": str(e.detail)}})
+    except Exception as e:
+        logger.exception(f"Job {job_id} failed: {e}")
+        await db.extract_jobs.update_one({"id": job_id}, {"$set": {"status": "failed", "error": "Extraction failed unexpectedly."}})
+
+
+async def _do_extract(req: "ExtractFromPdfReq", user: dict, material: dict) -> dict:
+    # Cap source text to keep extraction within Cloudflare 100s edge timeout.
     if req.pages:
-        text = await get_material_pages_text(req.material_id, req.pages, max_chars=24000)
+        text = await get_material_pages_text(req.material_id, req.pages, max_chars=30000)
         page_scope = f"pages {', '.join(str(p) for p in sorted(req.pages))}"
     else:
-        text = await get_material_full_text(req.material_id, max_chars=24000)
+        text = await get_material_full_text(req.material_id, max_chars=30000)
         page_scope = "the entire document"
     if not text.strip():
         raise HTTPException(status_code=400, detail="No text content in the selected pages")
 
+    # Optional separate answer-key PDF
+    answer_key_text = ""
+    if req.answer_key_material_id:
+        ak_mat = await db.materials.find_one(
+            {"id": req.answer_key_material_id, "user_id": user["id"], "is_deleted": False}
+        )
+        if not ak_mat:
+            raise HTTPException(status_code=404, detail="Answer key material not found")
+        if ak_mat.get("status") != "ready":
+            raise HTTPException(status_code=400, detail="Answer key material not ready")
+        answer_key_text = await get_material_full_text(req.answer_key_material_id, max_chars=40000)
+
+    # Build answer-source instructions based on user choice
+    answer_key_block = ""
+    if answer_key_text:
+        answer_key_block = f"""
+SEPARATE ANSWER KEY DOCUMENT (use this as the PRIMARY source for correct answers):
+---
+{answer_key_text}
+---
+"""
+    if answer_key_text:
+        answer_source_rules = """
+4. ANSWER KEY — use this priority order:
+   (a) PREFER the separate ANSWER KEY DOCUMENT above. Match by question number (Q1, Q.1, 1., etc).
+   (b) Else use an inline answer in the QUESTION TEXT below (e.g. "Ans: B", marking, circled option).
+   (c) Else set `correct_index` to null.
+   Set `answer_evidence` to the exact substring you used (e.g. "1) C" from the answer key, or "Ans: B" inline).
+   DO NOT guess from your own knowledge."""
+    elif req.use_ai_fallback:
+        answer_source_rules = """
+4. ANSWER KEY — use this priority order:
+   (a) If an inline answer is in the text (e.g. "Ans: B", marking, answer-key section), use it and set `answer_source` to "text".
+   (b) Otherwise use your own factual knowledge to pick the most likely correct option and set `answer_source` to "ai_knowledge".
+   Set `answer_evidence` to the exact text substring if source is "text"; else to a 1-line reasoning if "ai_knowledge".
+   Set `correct_index` to null only if you genuinely cannot determine it."""
+    else:
+        answer_source_rules = """
+4. ANSWER KEY — STRICT:
+   - Set `correct_index` ONLY if the answer is EXPLICITLY in the visible text (answer key section, inline "Ans: X", marked option).
+   - If not present, set `correct_index` to null.
+   - DO NOT guess based on your own knowledge.
+   - Set `answer_evidence` to the exact substring proving the answer."""
+
     prompt = f"""You are extracting questions VERBATIM from an Indian government exam paper / question bank.
 
-The text below is from {page_scope} of a student-uploaded PDF. Extract EVERY multiple-choice question that already exists in the text. Do NOT invent, paraphrase, or guess anything.
-
+The text below is from {page_scope} of a student-uploaded PDF. Extract EVERY multiple-choice question that already exists in the text. Do NOT invent, paraphrase, or guess question text — only the question text must be copied verbatim.
+{answer_key_block}
 CRITICAL RULES:
 
 1. VERBATIM EXTRACTION: Copy the question text EXACTLY as written. Do not shorten, paraphrase, fix grammar, or remove formatting like "Q.1", "1.", or numbering.
 
-2. COMPREHENSION / READING PASSAGES: If a question depends on a passage, paragraph, case-study, statements list, or reading text above it, copy that ENTIRE passage VERBATIM into the `passage` field. The `question` field contains ONLY the actual question after the passage (e.g. "According to the passage, what is…"). Multiple consecutive questions sharing the same passage MUST each carry the full passage text in their own `passage` field.
+2. COMPREHENSION / READING PASSAGES: If a question depends on a passage, paragraph, case-study, or statements list above it, copy that ENTIRE passage VERBATIM into the `passage` field. Multiple consecutive questions sharing the same passage MUST each carry the full passage text in their own `passage` field.
 
-3. OPTIONS: Exactly 4 options. Copy each option verbatim including any (A)/(B)/1./2. labels — but strip the label so only the answer text remains.
+3. OPTIONS: Exactly 4 options. Strip any (A)/(B)/1./2. labels — only the answer text remains.
 
-4. ANSWER KEY — MOST IMPORTANT:
-   - Set `correct_index` (0=A, 1=B, 2=C, 3=D) ONLY if the answer is EXPLICITLY stated in the visible text — e.g. an answer key section ("Answers: 1-B, 2-C, …"), or an inline marking like "Ans: (C)" or a circled / bolded / starred option.
-   - If the answer is NOT explicitly stated anywhere in the text, set `correct_index` to null.
-   - DO NOT guess based on your own knowledge. DO NOT pick a likely-looking answer.
-   - Set `answer_evidence` to the exact substring from the text that proves the answer (e.g. "Q1. Ans: B" or "Answer Key: 1) C"). If correct_index is null, set this to empty string.
+{answer_source_rules}
 
 5. SKIP: fill-in-the-blanks, true/false-only questions, essay/descriptive questions, match-the-following, and any question without exactly 4 options.
 
-6. NO DUPLICATES. Limit to 100 questions max.
+6. NO DUPLICATES. Aim to extract ALL questions present in the text (no artificial cap).
 
 Return STRICT JSON:
 {{
@@ -327,24 +400,25 @@ Return STRICT JSON:
       "question": "Exact question text verbatim",
       "options": ["opt A text","opt B text","opt C text","opt D text"],
       "correct_index": 2,
-      "answer_evidence": "exact substring from text proving the answer",
+      "answer_evidence": "exact substring or reasoning proving the answer",
+      "answer_source": "text" or "answer_key_pdf" or "ai_knowledge",
       "explanation": "explanation if present in text, else empty string",
       "topic": "infer e.g. History/Polity/Reading Comprehension"
     }}
   ]
 }}
 
-TEXT:
+QUESTION SOURCE TEXT:
 ---
 {text}
 ---
 
-Output ONLY valid JSON. No markdown."""
+Output ONLY valid JSON. No markdown. Include ALL questions you find."""
 
     try:
         raw = await mistral.chat(
             messages=[
-                {"role": "system", "content": "You extract MCQs verbatim from exam papers. You never guess answers — only mark answers that are explicitly stated in the source text. Return strict JSON."},
+                {"role": "system", "content": "You extract MCQs verbatim from exam papers. Question text is always quoted exactly. Return strict JSON."},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.0,
@@ -352,13 +426,20 @@ Output ONLY valid JSON. No markdown."""
             json_mode=True,
         )
         data = json.loads(raw)
+    except MistralOverloadedError as e:
+        logger.error(f"Mistral overloaded: {e}")
+        raise HTTPException(status_code=503, detail="AI service is busy right now. Please try again in a minute.")
+    except json.JSONDecodeError as e:
+        logger.error(f"Extract JSON parse failed: {e}")
+        raise HTTPException(status_code=502, detail="AI returned an invalid response. Please try again or reduce the number of selected pages.")
     except Exception as e:
-        logger.error(f"Extract failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Extraction failed: {e}")
+        logger.exception(f"Extract failed: {e}")
+        raise HTTPException(status_code=500, detail="Extraction failed. Please try again with fewer pages.")
 
     questions = data.get("questions", [])
     clean = []
     skipped_no_answer = 0
+    ai_answered = 0
     for q in questions:
         if not isinstance(q, dict): continue
         opts = q.get("options") or []
@@ -366,28 +447,37 @@ Output ONLY valid JSON. No markdown."""
         if not q.get("question"): continue
         ci = q.get("correct_index")
         evidence = (q.get("answer_evidence") or "").strip()
-        # Only keep questions with a verified answer (correct_index set AND evidence quoted)
-        if ci is None or not isinstance(ci, int) or not (0 <= ci <= 3) or not evidence:
+        source = (q.get("answer_source") or "").strip()
+        # Must have a valid correct_index
+        if ci is None or not isinstance(ci, int) or not (0 <= ci <= 3):
             skipped_no_answer += 1
             continue
+        # Strict mode: when no answer-key PDF and no fallback, AI must not have used its own knowledge
+        if not req.answer_key_material_id and not req.use_ai_fallback:
+            if source != "text" or not evidence:
+                skipped_no_answer += 1
+                continue
+        if source == "ai_knowledge":
+            ai_answered += 1
         clean.append({
             "passage": str(q.get("passage", "") or "").strip(),
             "question": str(q.get("question", "")).strip(),
             "options": [str(o) for o in opts],
             "correct_index": ci,
             "answer_evidence": evidence,
+            "answer_source": source or ("answer_key_pdf" if req.answer_key_material_id else "text"),
             "explanation": str(q.get("explanation", "") or "").strip(),
             "topic": str(q.get("topic", "") or "").strip(),
         })
 
     if not clean:
+        hint = (
+            "Provide an answer key PDF, enable the 'AI fills missing answers' option, "
+            "or include the answer-key page in your selection."
+        )
         raise HTTPException(
             status_code=400,
-            detail=(
-                "No MCQs with a verified answer key found in selected pages. "
-                "Tip: make sure the answer key page is also selected, "
-                "or the answers are written inline in the PDF (e.g. 'Ans: B')."
-            ),
+            detail=f"No MCQs with a verified answer could be extracted. {hint}",
         )
 
     return {
@@ -395,6 +485,11 @@ Output ONLY valid JSON. No markdown."""
         "material_filename": material.get("filename"),
         "extracted_count": len(clean),
         "skipped_no_answer": skipped_no_answer,
+        "ai_answered": ai_answered,
+        "answer_source_summary": (
+            "answer_key_pdf" if req.answer_key_material_id
+            else ("ai_fallback" if req.use_ai_fallback else "text_only")
+        ),
         "questions": clean,
     }
 
