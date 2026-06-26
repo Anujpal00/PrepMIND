@@ -1,6 +1,7 @@
 """Topic tests, mock tests, submissions, results."""
 import uuid
 import json
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Literal
@@ -281,7 +282,7 @@ class StartExtractedReq(BaseModel):
 
 @router.post("/extract-from-pdf")
 async def extract_from_pdf(req: ExtractFromPdfReq, user=Depends(get_current_user)):
-    """Extract MCQ-style questions that EXIST in the uploaded material (PYQ papers, question banks)."""
+    """Kicks off extraction in the background; returns a job_id to poll."""
     material = await db.materials.find_one(
         {"id": req.material_id, "user_id": user["id"], "is_deleted": False}
     )
@@ -289,7 +290,36 @@ async def extract_from_pdf(req: ExtractFromPdfReq, user=Depends(get_current_user
         raise HTTPException(status_code=404, detail="Material not found")
     if material.get("status") != "ready":
         raise HTTPException(status_code=400, detail="Material not ready")
+    job_id = str(uuid.uuid4())
+    await db.extract_jobs.insert_one({
+        "id": job_id, "user_id": user["id"], "material_id": req.material_id,
+        "status": "processing", "result": None, "error": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    asyncio.create_task(_run_extract_job(job_id, req, user, material))
+    return {"job_id": job_id, "status": "processing"}
 
+
+@router.get("/extract-job/{job_id}")
+async def extract_job_status(job_id: str, user=Depends(get_current_user)):
+    j = await db.extract_jobs.find_one({"id": job_id, "user_id": user["id"]}, {"_id": 0})
+    if not j:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return j
+
+
+async def _run_extract_job(job_id: str, req: "ExtractFromPdfReq", user: dict, material: dict):
+    try:
+        result = await _do_extract(req, user, material)
+        await db.extract_jobs.update_one({"id": job_id}, {"$set": {"status": "done", "result": result}})
+    except HTTPException as e:
+        await db.extract_jobs.update_one({"id": job_id}, {"$set": {"status": "failed", "error": str(e.detail)}})
+    except Exception as e:
+        logger.exception(f"Job {job_id} failed: {e}")
+        await db.extract_jobs.update_one({"id": job_id}, {"$set": {"status": "failed", "error": "Extraction failed unexpectedly."}})
+
+
+async def _do_extract(req: "ExtractFromPdfReq", user: dict, material: dict) -> dict:
     # Cap source text to keep extraction within Cloudflare 100s edge timeout.
     if req.pages:
         text = await get_material_pages_text(req.material_id, req.pages, max_chars=30000)

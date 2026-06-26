@@ -97,15 +97,29 @@ export default function TestsSetup() {
     setExtracting(true);
     setExtracted(null);
     try {
-      const { data } = await api.post("/tests/extract-from-pdf", {
+      const { data: job } = await api.post("/tests/extract-from-pdf", {
         material_id: pdfForm.material_id,
         pages: Array.from(selectedPages).sort((a,b) => a-b),
         answer_key_material_id: pdfForm.answer_key_material_id || undefined,
         use_ai_fallback: pdfForm.use_ai_fallback,
       });
-      setExtracted(data);
-      const aiNote = data.ai_answered ? ` (${data.ai_answered} answered by AI)` : "";
-      toast.success(`Found ${data.extracted_count} questions in ${selectedPages.size} selected pages!${aiNote}`);
+      // Poll the job
+      const jobId = job.job_id;
+      for (let i = 0; i < 90; i++) { // up to 3 min
+        await new Promise(r => setTimeout(r, 2000));
+        const { data: s } = await api.get(`/tests/extract-job/${jobId}`);
+        if (s.status === "done") {
+          setExtracted(s.result);
+          const aiNote = s.result.ai_answered ? ` (${s.result.ai_answered} answered by AI)` : "";
+          toast.success(`Found ${s.result.extracted_count} questions!${aiNote}`);
+          return;
+        }
+        if (s.status === "failed") {
+          toast.error(s.error || "Extraction failed");
+          return;
+        }
+      }
+      toast.error("Extraction is taking longer than expected. Try fewer pages.");
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Extraction failed");
     } finally { setExtracting(false); }
