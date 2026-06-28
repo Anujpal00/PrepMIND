@@ -92,5 +92,6 @@ frontend/node_modules/.cache/default-development/8.pack
 frontend/node_modules/.cache/default-development/1.pack
 *.emergent
 .emergent
+*docker-compose.yml
 docker-compose.yml
 
