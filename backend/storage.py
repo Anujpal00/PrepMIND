@@ -1,4 +1,4 @@
-"""Emergent-managed object storage client."""
+
 import os
 import requests
 import logging
