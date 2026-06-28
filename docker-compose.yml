@@ -1,0 +1,99 @@
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:latest
+    container_name: prepmind-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_DATABASE: prepmind_db
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+    networks:
+      - prepmind_network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017 --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: --wiredTigerCacheSizeGB 1
+    tmpfs:
+      - /tmp
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: prepmindbackend
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      # MongoDB
+      MONGO_URL: mongodb://mongodb:27017
+      DB_NAME: prepmind_ai
+      
+      # AI/LLM Configuration
+      GROQ_API_KEY: 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
+      MISTRAL_CHAT_MODEL: mistral-large-latest
+      MISTRAL_EMBED_MODEL: mistral-embed
+      MISTRAL_API_KEY: iz2fuO8J5VjI22nf7H2U0ovAyKBNUYJG
+      EMERGENT_LLM_KEY: sk-emergent-83aB17eBb2d99A045D
+      APP_NAME: prepmind
+      
+      # Security
+      JWT_SECRET: prepmind-jwt-secret-change-in-production-9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c
+      
+      # CORS
+      CORS_ORIGINS: "*"
+      
+      # Uvicorn
+      PYTHONUNBUFFERED: 1
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    networks:
+      - prepmind_network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Frontend Web App
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: prepmindfrontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      REACT_APP_BACKEND_URL: http://100.53.15.124:8000
+    ports:
+      - "85:80"
+    networks:
+      - prepmind_network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  mongodb_data:
+    driver: local
+  mongodb_config:
+    driver: local
+
+networks:
+  prepmind_network:
+    driver: bridge
