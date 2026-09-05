@@ -948,21 +948,6 @@ Contributions are invited! Follow these steps:
 
 ---
 
-## 📄 License
-
-This project is licensed under the **MIT License** – see LICENSE file for details.
-
----
-
-## 📧 Support & Feedback
-
-- **Issues**: Open a GitHub issue
-- **Email**: support@prepmind.ai
-- **Discord**: Join our community server (coming soon)
-- **Documentation**: https://docs.prepmind.ai
-
----
-
 ## 🙏 Acknowledgments
 
 Built with ❤️ for Indian exam aspirants.
@@ -995,6 +980,7 @@ Built with ❤️ for Indian exam aspirants.
 
 ---
 
-**Last Updated**: January 2024  
+**Last Updated**: January 2026  
 **Version**: 1.0.0  
-**Maintained by**: PrepMind AI Team
+**Maintain by**: Anuj Pal
+
